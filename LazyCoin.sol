@@ -4358,10 +4358,713 @@ interface IUniswapV2Router02 is IUniswapV2Router01 {
     ) external;
 }
 
+// File: contracts/IWormholeRelayer.sol
+
+
+
+pragma solidity ^0.8.0;
+
+/**
+ * @title WormholeRelayer
+ * @author 
+ * @notice This project allows developers to build cross-chain applications powered by Wormhole without needing to 
+ * write and run their own relaying infrastructure
+ * 
+ * We implement the IWormholeRelayer interface that allows users to request a delivery provider to relay a payload (and/or additional messages) 
+ * to a chain and address of their choice.
+ */
+
+/**
+ * @notice VaaKey identifies a wormhole message
+ *
+ * @custom:member chainId Wormhole chain ID of the chain where this VAA was emitted from
+ * @custom:member emitterAddress Address of the emitter of the VAA, in Wormhole bytes32 format
+ * @custom:member sequence Sequence number of the VAA
+ */
+struct VaaKey {
+    uint16 chainId;
+    bytes32 emitterAddress;
+    uint64 sequence;
+}
+
+// 0-127 are reserved for standardized KeyTypes, 128-255 are for custom use
+uint8 constant VAA_KEY_TYPE = 1;
+
+struct MessageKey {
+    uint8 keyType; // 0-127 are reserved for standardized KeyTypes, 128-255 are for custom use
+    bytes encodedKey;
+}
+
+
+interface IWormholeRelayerBase {
+    event SendEvent(
+        uint64 indexed sequence, uint256 deliveryQuote, uint256 paymentForExtraReceiverValue
+    );
+
+    function getRegisteredWormholeRelayerContract(uint16 chainId) external view returns (bytes32);
+
+    /**
+     * @notice Returns true if a delivery has been attempted for the given deliveryHash
+     * Note: invalid deliveries where the tx reverts are not considered attempted
+     */
+    function deliveryAttempted(bytes32 deliveryHash) external view returns (bool attempted);
+
+    /**
+     * @notice block number at which a delivery was successfully executed
+     */
+    function deliverySuccessBlock(bytes32 deliveryHash) external view returns (uint256 blockNumber);
+
+    /**
+     * @notice block number of the latest attempt to execute a delivery that failed
+     */
+    function deliveryFailureBlock(bytes32 deliveryHash) external view returns (uint256 blockNumber);
+}
+
+/**
+ * @title IWormholeRelayerSend
+ * @notice The interface to request deliveries
+ */
+interface IWormholeRelayerSend is IWormholeRelayerBase {
+
+    /**
+     * @notice Publishes an instruction for the default delivery provider
+     * to relay a payload to the address `targetAddress` on chain `targetChain` 
+     * with gas limit `gasLimit` and `msg.value` equal to `receiverValue`
+     * 
+     * `targetAddress` must implement the IWormholeReceiver interface
+     * 
+     * This function must be called with `msg.value` equal to `quoteEVMDeliveryPrice(targetChain, receiverValue, gasLimit)`
+     * 
+     * Any refunds (from leftover gas) will be paid to the delivery provider. In order to receive the refunds, use the `sendPayloadToEvm` function 
+     * with `refundChain` and `refundAddress` as parameters
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param targetAddress address to call on targetChain (that implements IWormholeReceiver) 
+     * @param payload arbitrary bytes to pass in as parameter in call to `targetAddress`
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param gasLimit gas limit with which to call `targetAddress`.
+     * @return sequence sequence number of published VAA containing delivery instructions
+     */
+    function sendPayloadToEvm(
+        uint16 targetChain,
+        address targetAddress,
+        bytes memory payload,
+        uint256 receiverValue,
+        uint256 gasLimit
+    ) external payable returns (uint64 sequence);
+
+    /**
+     * @notice Publishes an instruction for the default delivery provider
+     * to relay a payload to the address `targetAddress` on chain `targetChain` 
+     * with gas limit `gasLimit` and `msg.value` equal to `receiverValue`
+     * 
+     * Any refunds (from leftover gas) will be sent to `refundAddress` on chain `refundChain`
+     * `targetAddress` must implement the IWormholeReceiver interface
+     * 
+     * This function must be called with `msg.value` equal to `quoteEVMDeliveryPrice(targetChain, receiverValue, gasLimit)`
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param targetAddress address to call on targetChain (that implements IWormholeReceiver) 
+     * @param payload arbitrary bytes to pass in as parameter in call to `targetAddress`
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param gasLimit gas limit with which to call `targetAddress`. Any units of gas unused will be refunded according to the
+     *        `targetChainRefundPerGasUnused` rate quoted by the delivery provider
+     * @param refundChain The chain to deliver any refund to, in Wormhole Chain ID format
+     * @param refundAddress The address on `refundChain` to deliver any refund to
+     * @return sequence sequence number of published VAA containing delivery instructions
+     */
+    function sendPayloadToEvm(
+        uint16 targetChain,
+        address targetAddress,
+        bytes memory payload,
+        uint256 receiverValue,
+        uint256 gasLimit,
+        uint16 refundChain,
+        address refundAddress
+    ) external payable returns (uint64 sequence);
+
+    /**
+     * @notice Publishes an instruction for the default delivery provider
+     * to relay a payload and VAAs specified by `vaaKeys` to the address `targetAddress` on chain `targetChain` 
+     * with gas limit `gasLimit` and `msg.value` equal to `receiverValue`
+     * 
+     * `targetAddress` must implement the IWormholeReceiver interface
+     * 
+     * This function must be called with `msg.value` equal to `quoteEVMDeliveryPrice(targetChain, receiverValue, gasLimit)`
+     * 
+     * Any refunds (from leftover gas) will be paid to the delivery provider. In order to receive the refunds, use the `sendVaasToEvm` function 
+     * with `refundChain` and `refundAddress` as parameters
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param targetAddress address to call on targetChain (that implements IWormholeReceiver) 
+     * @param payload arbitrary bytes to pass in as parameter in call to `targetAddress`
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param gasLimit gas limit with which to call `targetAddress`. 
+     * @param vaaKeys Additional VAAs to pass in as parameter in call to `targetAddress`
+     * @return sequence sequence number of published VAA containing delivery instructions
+     */
+    function sendVaasToEvm(
+        uint16 targetChain,
+        address targetAddress,
+        bytes memory payload,
+        uint256 receiverValue,
+        uint256 gasLimit,
+        VaaKey[] memory vaaKeys
+    ) external payable returns (uint64 sequence);
+
+    /**
+     * @notice Publishes an instruction for the default delivery provider
+     * to relay a payload and VAAs specified by `vaaKeys` to the address `targetAddress` on chain `targetChain` 
+     * with gas limit `gasLimit` and `msg.value` equal to `receiverValue`
+     * 
+     * Any refunds (from leftover gas) will be sent to `refundAddress` on chain `refundChain`
+     * `targetAddress` must implement the IWormholeReceiver interface
+     * 
+     * This function must be called with `msg.value` equal to `quoteEVMDeliveryPrice(targetChain, receiverValue, gasLimit)`
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param targetAddress address to call on targetChain (that implements IWormholeReceiver) 
+     * @param payload arbitrary bytes to pass in as parameter in call to `targetAddress`
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param gasLimit gas limit with which to call `targetAddress`. Any units of gas unused will be refunded according to the 
+     *        `targetChainRefundPerGasUnused` rate quoted by the delivery provider
+     * @param vaaKeys Additional VAAs to pass in as parameter in call to `targetAddress`
+     * @param refundChain The chain to deliver any refund to, in Wormhole Chain ID format
+     * @param refundAddress The address on `refundChain` to deliver any refund to
+     * @return sequence sequence number of published VAA containing delivery instructions
+     */
+    function sendVaasToEvm(
+        uint16 targetChain,
+        address targetAddress,
+        bytes memory payload,
+        uint256 receiverValue,
+        uint256 gasLimit,
+        VaaKey[] memory vaaKeys,
+        uint16 refundChain,
+        address refundAddress
+    ) external payable returns (uint64 sequence);
+
+    /**
+     * @notice Publishes an instruction for the delivery provider at `deliveryProviderAddress` 
+     * to relay a payload and VAAs specified by `vaaKeys` to the address `targetAddress` on chain `targetChain` 
+     * with gas limit `gasLimit` and `msg.value` equal to 
+     * receiverValue + (arbitrary amount that is paid for by paymentForExtraReceiverValue of this chain's wei) in targetChain wei.
+     * 
+     * Any refunds (from leftover gas) will be sent to `refundAddress` on chain `refundChain`
+     * `targetAddress` must implement the IWormholeReceiver interface
+     * 
+     * This function must be called with `msg.value` equal to 
+     * quoteEVMDeliveryPrice(targetChain, receiverValue, gasLimit, deliveryProviderAddress) + paymentForExtraReceiverValue
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param targetAddress address to call on targetChain (that implements IWormholeReceiver) 
+     * @param payload arbitrary bytes to pass in as parameter in call to `targetAddress`
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param paymentForExtraReceiverValue amount (in current chain currency units) to spend on extra receiverValue 
+     *        (in addition to the `receiverValue` specified)
+     * @param gasLimit gas limit with which to call `targetAddress`. Any units of gas unused will be refunded according to the  
+     *        `targetChainRefundPerGasUnused` rate quoted by the delivery provider
+     * @param refundChain The chain to deliver any refund to, in Wormhole Chain ID format
+     * @param refundAddress The address on `refundChain` to deliver any refund to
+     * @param deliveryProviderAddress The address of the desired delivery provider's implementation of IDeliveryProvider
+     * @param vaaKeys Additional VAAs to pass in as parameter in call to `targetAddress`
+     * @param consistencyLevel Consistency level with which to publish the delivery instructions - see 
+     *        https://book.wormhole.com/wormhole/3_coreLayerContracts.html?highlight=consistency#consistency-levels
+     * @return sequence sequence number of published VAA containing delivery instructions
+     */
+    function sendToEvm(
+        uint16 targetChain,
+        address targetAddress,
+        bytes memory payload,
+        uint256 receiverValue,
+        uint256 paymentForExtraReceiverValue,
+        uint256 gasLimit,
+        uint16 refundChain,
+        address refundAddress,
+        address deliveryProviderAddress,
+        VaaKey[] memory vaaKeys,
+        uint8 consistencyLevel
+    ) external payable returns (uint64 sequence);
+
+    /**
+     * @notice Publishes an instruction for the delivery provider at `deliveryProviderAddress` 
+     * to relay a payload and external messages specified by `messageKeys` to the address `targetAddress` on chain `targetChain` 
+     * with gas limit `gasLimit` and `msg.value` equal to 
+     * receiverValue + (arbitrary amount that is paid for by paymentForExtraReceiverValue of this chain's wei) in targetChain wei.
+     * 
+     * Any refunds (from leftover gas) will be sent to `refundAddress` on chain `refundChain`
+     * `targetAddress` must implement the IWormholeReceiver interface
+     * 
+     * This function must be called with `msg.value` equal to 
+     * quoteEVMDeliveryPrice(targetChain, receiverValue, gasLimit, deliveryProviderAddress) + paymentForExtraReceiverValue
+     *
+     * Note: MessageKeys can specify wormhole messages (VaaKeys) or other types of messages (ex. USDC CCTP attestations). Ensure the selected 
+     * DeliveryProvider supports all the MessageKey.keyType values specified or it will not be delivered!
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param targetAddress address to call on targetChain (that implements IWormholeReceiver) 
+     * @param payload arbitrary bytes to pass in as parameter in call to `targetAddress`
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param paymentForExtraReceiverValue amount (in current chain currency units) to spend on extra receiverValue 
+     *        (in addition to the `receiverValue` specified)
+     * @param gasLimit gas limit with which to call `targetAddress`. Any units of gas unused will be refunded according to the  
+     *        `targetChainRefundPerGasUnused` rate quoted by the delivery provider
+     * @param refundChain The chain to deliver any refund to, in Wormhole Chain ID format
+     * @param refundAddress The address on `refundChain` to deliver any refund to
+     * @param deliveryProviderAddress The address of the desired delivery provider's implementation of IDeliveryProvider
+     * @param messageKeys Additional messagess to pass in as parameter in call to `targetAddress`
+     * @param consistencyLevel Consistency level with which to publish the delivery instructions - see 
+     *        https://book.wormhole.com/wormhole/3_coreLayerContracts.html?highlight=consistency#consistency-levels
+     * @return sequence sequence number of published VAA containing delivery instructions
+     */
+    function sendToEvm(
+        uint16 targetChain,
+        address targetAddress,
+        bytes memory payload,
+        uint256 receiverValue,
+        uint256 paymentForExtraReceiverValue,
+        uint256 gasLimit,
+        uint16 refundChain,
+        address refundAddress,
+        address deliveryProviderAddress,
+        MessageKey[] memory messageKeys,
+        uint8 consistencyLevel
+    ) external payable returns (uint64 sequence);
+    
+    /**
+     * @notice Publishes an instruction for the delivery provider at `deliveryProviderAddress` 
+     * to relay a payload and VAAs specified by `vaaKeys` to the address `targetAddress` on chain `targetChain` 
+     * with `msg.value` equal to 
+     * receiverValue + (arbitrary amount that is paid for by paymentForExtraReceiverValue of this chain's wei) in targetChain wei.
+     * 
+     * Any refunds (from leftover gas) will be sent to `refundAddress` on chain `refundChain`
+     * `targetAddress` must implement the IWormholeReceiver interface
+     * 
+     * This function must be called with `msg.value` equal to 
+     * quoteDeliveryPrice(targetChain, receiverValue, encodedExecutionParameters, deliveryProviderAddress) + paymentForExtraReceiverValue  
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param targetAddress address to call on targetChain (that implements IWormholeReceiver), in Wormhole bytes32 format
+     * @param payload arbitrary bytes to pass in as parameter in call to `targetAddress`
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param paymentForExtraReceiverValue amount (in current chain currency units) to spend on extra receiverValue 
+     *        (in addition to the `receiverValue` specified)
+     * @param encodedExecutionParameters encoded information on how to execute delivery that may impact pricing
+     *        e.g. for version EVM_V1, this is a struct that encodes the `gasLimit` with which to call `targetAddress`
+     * @param refundChain The chain to deliver any refund to, in Wormhole Chain ID format
+     * @param refundAddress The address on `refundChain` to deliver any refund to, in Wormhole bytes32 format
+     * @param deliveryProviderAddress The address of the desired delivery provider's implementation of IDeliveryProvider
+     * @param vaaKeys Additional VAAs to pass in as parameter in call to `targetAddress`
+     * @param consistencyLevel Consistency level with which to publish the delivery instructions - see 
+     *        https://book.wormhole.com/wormhole/3_coreLayerContracts.html?highlight=consistency#consistency-levels
+     * @return sequence sequence number of published VAA containing delivery instructions
+     */
+    function send(
+        uint16 targetChain,
+        bytes32 targetAddress,
+        bytes memory payload,
+        uint256 receiverValue,
+        uint256 paymentForExtraReceiverValue,
+        bytes memory encodedExecutionParameters,
+        uint16 refundChain,
+        bytes32 refundAddress,
+        address deliveryProviderAddress,
+        VaaKey[] memory vaaKeys,
+        uint8 consistencyLevel
+    ) external payable returns (uint64 sequence);
+
+    /**
+     * @notice Publishes an instruction for the delivery provider at `deliveryProviderAddress` 
+     * to relay a payload and VAAs specified by `vaaKeys` to the address `targetAddress` on chain `targetChain` 
+     * with `msg.value` equal to 
+     * receiverValue + (arbitrary amount that is paid for by paymentForExtraReceiverValue of this chain's wei) in targetChain wei.
+     * 
+     * Any refunds (from leftover gas) will be sent to `refundAddress` on chain `refundChain`
+     * `targetAddress` must implement the IWormholeReceiver interface
+     * 
+     * This function must be called with `msg.value` equal to 
+     * quoteDeliveryPrice(targetChain, receiverValue, encodedExecutionParameters, deliveryProviderAddress) + paymentForExtraReceiverValue  
+     *
+     * Note: MessageKeys can specify wormhole messages (VaaKeys) or other types of messages (ex. USDC CCTP attestations). Ensure the selected 
+     * DeliveryProvider supports all the MessageKey.keyType values specified or it will not be delivered!
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param targetAddress address to call on targetChain (that implements IWormholeReceiver), in Wormhole bytes32 format
+     * @param payload arbitrary bytes to pass in as parameter in call to `targetAddress`
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param paymentForExtraReceiverValue amount (in current chain currency units) to spend on extra receiverValue 
+     *        (in addition to the `receiverValue` specified)
+     * @param encodedExecutionParameters encoded information on how to execute delivery that may impact pricing
+     *        e.g. for version EVM_V1, this is a struct that encodes the `gasLimit` with which to call `targetAddress`
+     * @param refundChain The chain to deliver any refund to, in Wormhole Chain ID format
+     * @param refundAddress The address on `refundChain` to deliver any refund to, in Wormhole bytes32 format
+     * @param deliveryProviderAddress The address of the desired delivery provider's implementation of IDeliveryProvider
+     * @param messageKeys Additional messagess to pass in as parameter in call to `targetAddress`
+     * @param consistencyLevel Consistency level with which to publish the delivery instructions - see 
+     *        https://book.wormhole.com/wormhole/3_coreLayerContracts.html?highlight=consistency#consistency-levels
+     * @return sequence sequence number of published VAA containing delivery instructions
+     */
+    function send(
+        uint16 targetChain,
+        bytes32 targetAddress,
+        bytes memory payload,
+        uint256 receiverValue,
+        uint256 paymentForExtraReceiverValue,
+        bytes memory encodedExecutionParameters,
+        uint16 refundChain,
+        bytes32 refundAddress,
+        address deliveryProviderAddress,
+        MessageKey[] memory messageKeys,
+        uint8 consistencyLevel
+    ) external payable returns (uint64 sequence);
+
+    /**
+     * @notice Requests a previously published delivery instruction to be redelivered 
+     * (e.g. with a different delivery provider)
+     *
+     * This function must be called with `msg.value` equal to 
+     * quoteEVMDeliveryPrice(targetChain, newReceiverValue, newGasLimit, newDeliveryProviderAddress)
+     * 
+     *  @notice *** This will only be able to succeed if the following is true **
+     *         - newGasLimit >= gas limit of the old instruction
+     *         - newReceiverValue >= receiver value of the old instruction
+     *         - newDeliveryProvider's `targetChainRefundPerGasUnused` >= old relay provider's `targetChainRefundPerGasUnused`
+     * 
+     * @param deliveryVaaKey VaaKey identifying the wormhole message containing the 
+     *        previously published delivery instructions
+     * @param targetChain The target chain that the original delivery targeted. Must match targetChain from original delivery instructions
+     * @param newReceiverValue new msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param newGasLimit gas limit with which to call `targetAddress`. Any units of gas unused will be refunded according to the  
+     *        `targetChainRefundPerGasUnused` rate quoted by the delivery provider, to the refund chain and address specified in the original request
+     * @param newDeliveryProviderAddress The address of the desired delivery provider's implementation of IDeliveryProvider
+     * @return sequence sequence number of published VAA containing redelivery instructions
+     *
+     * @notice *** This will only be able to succeed if the following is true **
+     *         - newGasLimit >= gas limit of the old instruction
+     *         - newReceiverValue >= receiver value of the old instruction
+     */
+    function resendToEvm(
+        VaaKey memory deliveryVaaKey,
+        uint16 targetChain,
+        uint256 newReceiverValue,
+        uint256 newGasLimit,
+        address newDeliveryProviderAddress
+    ) external payable returns (uint64 sequence);
+
+    /**
+     * @notice Requests a previously published delivery instruction to be redelivered 
+     * 
+     *
+     * This function must be called with `msg.value` equal to 
+     * quoteDeliveryPrice(targetChain, newReceiverValue, newEncodedExecutionParameters, newDeliveryProviderAddress)
+     * 
+     * @param deliveryVaaKey VaaKey identifying the wormhole message containing the 
+     *        previously published delivery instructions
+     * @param targetChain The target chain that the original delivery targeted. Must match targetChain from original delivery instructions
+     * @param newReceiverValue new msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param newEncodedExecutionParameters new encoded information on how to execute delivery that may impact pricing
+     *        e.g. for version EVM_V1, this is a struct that encodes the `gasLimit` with which to call `targetAddress`
+     * @param newDeliveryProviderAddress The address of the desired delivery provider's implementation of IDeliveryProvider
+     * @return sequence sequence number of published VAA containing redelivery instructions
+     * 
+     *  @notice *** This will only be able to succeed if the following is true **
+     *         - (For EVM_V1) newGasLimit >= gas limit of the old instruction
+     *         - newReceiverValue >= receiver value of the old instruction
+     *         - (For EVM_V1) newDeliveryProvider's `targetChainRefundPerGasUnused` >= old relay provider's `targetChainRefundPerGasUnused`
+     */
+    function resend(
+        VaaKey memory deliveryVaaKey,
+        uint16 targetChain,
+        uint256 newReceiverValue,
+        bytes memory newEncodedExecutionParameters,
+        address newDeliveryProviderAddress
+    ) external payable returns (uint64 sequence);
+
+    /**
+     * @notice Returns the price to request a relay to chain `targetChain`, using the default delivery provider
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param gasLimit gas limit with which to call `targetAddress`. 
+     * @return nativePriceQuote Price, in units of current chain currency, that the delivery provider charges to perform the relay
+     * @return targetChainRefundPerGasUnused amount of target chain currency that will be refunded per unit of gas unused, 
+     *         if a refundAddress is specified. 
+     *         Note: This value can be overridden by the delivery provider on the target chain. The returned value here should be considered to be a 
+     *         promise by the delivery provider of the amount of refund per gas unused that will be returned to the refundAddress at the target chain. 
+     *         If a delivery provider decides to override, this will be visible as part of the emitted Delivery event on the target chain. 
+     */
+    function quoteEVMDeliveryPrice(
+        uint16 targetChain,
+        uint256 receiverValue,
+        uint256 gasLimit
+    ) external view returns (uint256 nativePriceQuote, uint256 targetChainRefundPerGasUnused);
+
+    /**
+     * @notice Returns the price to request a relay to chain `targetChain`, using delivery provider `deliveryProviderAddress`
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param gasLimit gas limit with which to call `targetAddress`. 
+     * @param deliveryProviderAddress The address of the desired delivery provider's implementation of IDeliveryProvider
+     * @return nativePriceQuote Price, in units of current chain currency, that the delivery provider charges to perform the relay
+     * @return targetChainRefundPerGasUnused amount of target chain currency that will be refunded per unit of gas unused, 
+     *         if a refundAddress is specified
+     *         Note: This value can be overridden by the delivery provider on the target chain. The returned value here should be considered to be a 
+     *         promise by the delivery provider of the amount of refund per gas unused that will be returned to the refundAddress at the target chain. 
+     *         If a delivery provider decides to override, this will be visible as part of the emitted Delivery event on the target chain.
+     */
+    function quoteEVMDeliveryPrice(
+        uint16 targetChain,
+        uint256 receiverValue,
+        uint256 gasLimit,
+        address deliveryProviderAddress
+    ) external view returns (uint256 nativePriceQuote, uint256 targetChainRefundPerGasUnused);
+
+    /**
+     * @notice Returns the price to request a relay to chain `targetChain`, using delivery provider `deliveryProviderAddress`
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param receiverValue msg.value that delivery provider should pass in for call to `targetAddress` (in targetChain currency units)
+     * @param encodedExecutionParameters encoded information on how to execute delivery that may impact pricing
+     *        e.g. for version EVM_V1, this is a struct that encodes the `gasLimit` with which to call `targetAddress`
+     * @param deliveryProviderAddress The address of the desired delivery provider's implementation of IDeliveryProvider
+     * @return nativePriceQuote Price, in units of current chain currency, that the delivery provider charges to perform the relay
+     * @return encodedExecutionInfo encoded information on how the delivery will be executed
+     *        e.g. for version EVM_V1, this is a struct that encodes the `gasLimit` and `targetChainRefundPerGasUnused`
+     *             (which is the amount of target chain currency that will be refunded per unit of gas unused, 
+     *              if a refundAddress is specified)
+     */
+    function quoteDeliveryPrice(
+        uint16 targetChain,
+        uint256 receiverValue,
+        bytes memory encodedExecutionParameters,
+        address deliveryProviderAddress
+    ) external view returns (uint256 nativePriceQuote, bytes memory encodedExecutionInfo);
+
+    /**
+     * @notice Returns the (extra) amount of target chain currency that `targetAddress`
+     * will be called with, if the `paymentForExtraReceiverValue` field is set to `currentChainAmount`
+     * 
+     * @param targetChain in Wormhole Chain ID format
+     * @param currentChainAmount The value that `paymentForExtraReceiverValue` will be set to
+     * @param deliveryProviderAddress The address of the desired delivery provider's implementation of IDeliveryProvider
+     * @return targetChainAmount The amount such that if `targetAddress` will be called with `msg.value` equal to
+     *         receiverValue + targetChainAmount
+     */
+    function quoteNativeForChain(
+        uint16 targetChain,
+        uint256 currentChainAmount,
+        address deliveryProviderAddress
+    ) external view returns (uint256 targetChainAmount);
+
+    /**
+     * @notice Returns the address of the current default delivery provider
+     * @return deliveryProvider The address of (the default delivery provider)'s contract on this source
+     *   chain. This must be a contract that implements IDeliveryProvider.
+     */
+    function getDefaultDeliveryProvider() external view returns (address deliveryProvider);
+}
+
+/**
+ * @title IWormholeRelayerDelivery
+ * @notice The interface to execute deliveries. Only relevant for Delivery Providers 
+ */
+interface IWormholeRelayerDelivery is IWormholeRelayerBase {
+    enum DeliveryStatus {
+        SUCCESS,
+        RECEIVER_FAILURE
+    }
+
+    enum RefundStatus {
+        REFUND_SENT,
+        REFUND_FAIL,
+        CROSS_CHAIN_REFUND_SENT,
+        CROSS_CHAIN_REFUND_FAIL_PROVIDER_NOT_SUPPORTED,
+        CROSS_CHAIN_REFUND_FAIL_NOT_ENOUGH,
+        NO_REFUND_REQUESTED
+    }
+
+    /**
+     * @custom:member recipientContract - The target contract address
+     * @custom:member sourceChain - The chain which this delivery was requested from (in wormhole
+     *     ChainID format)
+     * @custom:member sequence - The wormhole sequence number of the delivery VAA on the source chain
+     *     corresponding to this delivery request
+     * @custom:member deliveryVaaHash - The hash of the delivery VAA corresponding to this delivery
+     *     request
+     * @custom:member gasUsed - The amount of gas that was used to call your target contract 
+     * @custom:member status:
+     *   - RECEIVER_FAILURE, if the target contract reverts
+     *   - SUCCESS, if the target contract doesn't revert
+     * @custom:member additionalStatusInfo:
+     *   - If status is SUCCESS, then this is empty.
+     *   - If status is RECEIVER_FAILURE, this is `RETURNDATA_TRUNCATION_THRESHOLD` bytes of the
+     *       return data (i.e. potentially truncated revert reason information).
+     * @custom:member refundStatus - Result of the refund. REFUND_SUCCESS or REFUND_FAIL are for
+     *     refunds where targetChain=refundChain; the others are for targetChain!=refundChain,
+     *     where a cross chain refund is necessary, or if the default code path is used where no refund is requested (NO_REFUND_REQUESTED)
+     * @custom:member overridesInfo:
+     *   - If not an override: empty bytes array
+     *   - Otherwise: An encoded `DeliveryOverride`
+     */
+    event Delivery(
+        address indexed recipientContract,
+        uint16 indexed sourceChain,
+        uint64 indexed sequence,
+        bytes32 deliveryVaaHash,
+        DeliveryStatus status,
+        uint256 gasUsed,
+        RefundStatus refundStatus,
+        bytes additionalStatusInfo,
+        bytes overridesInfo
+    );
+
+    /**
+     * @notice The delivery provider calls `deliver` to relay messages as described by one delivery instruction
+     * 
+     * The delivery provider must pass in the specified (by VaaKeys[]) signed wormhole messages (VAAs) from the source chain
+     * as well as the signed wormhole message with the delivery instructions (the delivery VAA)
+     *
+     * The messages will be relayed to the target address (with the specified gas limit and receiver value) iff the following checks are met:
+     * - the delivery VAA has a valid signature
+     * - the delivery VAA's emitter is one of these WormholeRelayer contracts
+     * - the delivery provider passed in at least enough of this chain's currency as msg.value (enough meaning the maximum possible refund)     
+     * - the instruction's target chain is this chain
+     * - the relayed signed VAAs match the descriptions in container.messages (the VAA hashes match, or the emitter address, sequence number pair matches, depending on the description given)
+     *
+     * @param encodedVMs - An array of signed wormhole messages (all from the same source chain
+     *     transaction)
+     * @param encodedDeliveryVAA - Signed wormhole message from the source chain's WormholeRelayer
+     *     contract with payload being the encoded delivery instruction container
+     * @param relayerRefundAddress - The address to which any refunds to the delivery provider
+     *     should be sent
+     * @param deliveryOverrides - Optional overrides field which must be either an empty bytes array or
+     *     an encoded DeliveryOverride struct
+     */
+    function deliver(
+        bytes[] memory encodedVMs,
+        bytes memory encodedDeliveryVAA,
+        address payable relayerRefundAddress,
+        bytes memory deliveryOverrides
+    ) external payable;
+}
+
+interface IWormholeRelayer is IWormholeRelayerDelivery, IWormholeRelayerSend {}
+
+/*
+ *  Errors thrown by IWormholeRelayer contract
+ */
+
+// Bound chosen by the following formula: `memoryWord * 4 + selectorSize`.
+// This means that an error identifier plus four fixed size arguments should be available to developers.
+// In the case of a `require` revert with error message, this should provide 2 memory word's worth of data.
+uint256 constant RETURNDATA_TRUNCATION_THRESHOLD = 132;
+
+//When msg.value was not equal to `delivery provider's quoted delivery price` + `paymentForExtraReceiverValue`
+error InvalidMsgValue(uint256 msgValue, uint256 totalFee);
+
+error RequestedGasLimitTooLow();
+
+error DeliveryProviderDoesNotSupportTargetChain(address relayer, uint16 chainId);
+error DeliveryProviderCannotReceivePayment();
+error DeliveryProviderDoesNotSupportMessageKeyType(uint8 keyType);
+
+//When calling `delivery()` a second time even though a delivery is already in progress
+error ReentrantDelivery(address msgSender, address lockedBy);
+
+error InvalidPayloadId(uint8 parsed, uint8 expected);
+error InvalidPayloadLength(uint256 received, uint256 expected);
+error InvalidVaaKeyType(uint8 parsed);
+error TooManyMessageKeys(uint256 numMessageKeys);
+
+error InvalidDeliveryVaa(string reason);
+//When the delivery VAA (signed wormhole message with delivery instructions) was not emitted by the
+//  registered WormholeRelayer contract
+error InvalidEmitter(bytes32 emitter, bytes32 registered, uint16 chainId);
+error MessageKeysLengthDoesNotMatchMessagesLength(uint256 keys, uint256 vaas);
+error VaaKeysDoNotMatchVaas(uint8 index);
+//When someone tries to call an external function of the WormholeRelayer that is only intended to be
+//  called by the WormholeRelayer itself (to allow retroactive reverts for atomicity)
+error RequesterNotWormholeRelayer();
+
+//When trying to relay a `DeliveryInstruction` to any other chain but the one it was specified for
+error TargetChainIsNotThisChain(uint16 targetChain);
+//When a `DeliveryOverride` contains a gas limit that's less than the original
+error InvalidOverrideGasLimit();
+//When a `DeliveryOverride` contains a receiver value that's less than the original
+error InvalidOverrideReceiverValue();
+//When a `DeliveryOverride` contains a 'refund per unit of gas unused' that's less than the original
+error InvalidOverrideRefundPerGasUnused();
+
+//When the delivery provider doesn't pass in sufficient funds (i.e. msg.value does not cover the
+// maximum possible refund to the user)
+error InsufficientRelayerFunds(uint256 msgValue, uint256 minimum);
+
+//When a bytes32 field can't be converted into a 20 byte EVM address, because the 12 padding bytes
+//  are non-zero (duplicated from Utils.sol)
+error NotAnEvmAddress(bytes32);
+
+// File: contracts/IWormholeReceiver.sol
+
+
+
+pragma solidity ^0.8.0;
+
+/**
+ * @notice Interface for a contract which can receive Wormhole messages.
+ */
+interface IWormholeReceiver {
+    /**
+     * @notice When a `send` is performed with this contract as the target, this function will be
+     *     invoked by the WormholeRelayer contract
+     *
+     * NOTE: This function should be restricted such that only the Wormhole Relayer contract can call it.
+     *
+     * We also recommend that this function checks that `sourceChain` and `sourceAddress` are indeed who
+     *       you expect to have requested the calling of `send` on the source chain
+     *
+     * The invocation of this function corresponding to the `send` request will have msg.value equal
+     *   to the receiverValue specified in the send request.
+     *
+     * If the invocation of this function reverts or exceeds the gas limit
+     *   specified by the send requester, this delivery will result in a `ReceiverFailure`.
+     *
+     * @param payload - an arbitrary message which was included in the delivery by the
+     *     requester. This message's signature will already have been verified (as long as msg.sender is the Wormhole Relayer contract)
+     * @param additionalMessages - Additional messages which were requested to be included in this delivery.
+     *      Note: There are no contract-level guarantees that the messages in this array are what was requested
+     *      so **you should verify any sensitive information given here!**
+     *
+     *      For example, if a 'VaaKey' was specified on the source chain, then MAKE SURE the corresponding message here
+     *      has valid signatures (by calling `parseAndVerifyVM(message)` on the Wormhole core contract)
+     *
+     *      This field can be used to perform and relay TokenBridge or CCTP transfers, and there are example
+     *      usages of this at
+     *         https://github.com/wormhole-foundation/hello-token
+     *         https://github.com/wormhole-foundation/hello-cctp
+     *
+     * @param sourceAddress - the (wormhole format) address on the sending chain which requested
+     *     this delivery.
+     * @param sourceChain - the wormhole chain ID where this delivery was requested.
+     * @param deliveryHash - the VAA hash of the deliveryVAA.
+     *
+     */
+    function receiveWormholeMessages(
+        bytes memory payload,
+        bytes[] memory additionalMessages,
+        bytes32 sourceAddress,
+        uint16 sourceChain,
+        bytes32 deliveryHash
+    ) external payable;
+}
+
 // File: contracts/LazyCoin.sol
 
 
+
 pragma solidity ^0.8.20;
+
+
 
 
 
@@ -4373,34 +5076,47 @@ pragma solidity ^0.8.20;
  * @title LazyCoin
  * @notice An ERC-20/BEP-20 token with advanced fee and reward mechanisms.
  * @dev Extends OpenZeppelin's ERC20, ERC20Permit, Ownable, and ReentrancyGuard.
- *      Implements a fee structure including whale, marketing, reward, and liquidity fees.
- *      The contract automatically manages liquidity addition via Uniswap V2 and provides a reward system where users
- *      accumulate rewards from fees and can claim them after a specified holding period.
+ * Implements fee structure including whale, marketing, reward, and liquidity fees.
+ * Automatically manages liquidity addition via Uniswap V2.
+ * Provides a reward system where users accumulate rewards from fees and can claim them after a minimum holding period.
+ * Also includes cross-chain transfer functionality via a Wormhole relayer.
  */
-contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
+contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable, IWormholeReceiver {
+    // =========================
+    //     WORMHOLE VARIABLES
+    // =========================
+
+    IWormholeRelayer public wormholeRelayer;
+    mapping(uint16 => bytes32) public registeredSenders;
+    mapping(bytes32 => bool) private processedTransfer;
+    bool private inCrossChainTransfer;
+    uint16 chainId;
+    address deliveryProvider;
 
     // =========================
-    //      LIQUIDITY VARIABLES
+    //    LIQUIDITY VARIABLES
     // =========================
+
     IUniswapV2Router02 public uniswapRouter;
-    address public immutable uniswapPair;
-    uint256 private swapThreshold;
+    address internal immutable uniswapPair;
+    uint256 private constant swapThreshold = 50000 * (10 ** 18); // 50,000 LZY tokens
     bool private inSwapAndLiquify;
 
     // =========================
-    //      REWARD SYSTEM VARIABLES
+    //  REWARD SYSTEM VARIABLES
     // =========================
     // Both parameters are measured in hours.
-    uint32 public minRewardHoldingTime; // Minimum holding time required to claim rewards (e.g. 24 hours)
-    uint32 public maxRewardHoldingTime; // Maximum holding time after which unclaimed rewards are returned (e.g. 72 hours)
+    uint32 internal constant MIN_REW_HOLDING_TIME = 24; // Minimum holding time required to claim rewards (24 hours)
+    uint32 internal constant MAX_REW_HOLDING_TIME = 72; // Maximum holding time after which unclaimed rewards are returned (72 hours)
+    uint256 internal WHALE_THRESHOLD = 10000000 * (10 ** 18); // 10,000,000 LZY tokens
     uint256 public totalRewards;
     uint256 public availableRewards;
     uint256 public uncollectedReward;
-    uint256 public whaleThresholdRate; // In parts per million (ppm)
 
     // =========================
-    //      WALLET ADDRESS VARIABLES
+    // WALLET ADDRESS VARIABLES
     // =========================
+
     address public marketingWalletAddress;
     address public rewardPoolAddress;
     address public multiChainWalletAddress;
@@ -4409,21 +5125,22 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
     //      FEE VARIABLES
     // =========================
     // Fee values are expressed relative to FEE_PRECISION (1,000,000).
-    uint256 public whaleFeeRate;
-    uint256 public marketingFeeRate;
-    uint256 public rewardFeeRate;
-    uint256 public liquidityFeeRate;
+    uint256 internal constant WHALE_FEE_RATE = 30000; // 3%
+    uint256 internal constant MARKETING_FEE_RATE = 5000; // 0.5%
+    uint256 internal constant REWARD_FEE_RATE = 20000; // 2%
+    uint256 internal constant LIQUIDITY_FEE_RATE = 1000; // 0.1%
 
     // =========================
-    //      ERC20 OVERRIDDEN STATE
+    //  ERC20 OVERRIDDEN STATE
     // =========================
+
     uint256 private totalSupply_;
 
     // =========================
     //      OTHER VARIABLES
     // =========================
+
     uint32 private constant FEE_PRECISION = 1000000;
-    uint256 private decimalFactor;
     address private deadAddress = 0x000000000000000000000000000000000000dEaD;
 
     // =========================
@@ -4432,7 +5149,8 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
 
     /**
      * @notice Structure to store user-specific data for the reward and fee system.
-     * @dev Holds reward checkpoints, accumulated rewards, balance and exclusion flags.
+     * @dev Holds reward checkpoints, accumulated rewards, token balance,
+     *      and flags indicating fee and reward exclusion.
      */
     struct User {
         uint256 lastRewardClaimingTS;
@@ -4441,13 +5159,10 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
         uint256 pendingReward;
         uint256 collectedReward;
         uint256 balance;
-        bool isEarlyInvestor;
         bool isExcludedFromFee;
         bool isExcludedFromReward;
     }
-
     mapping(address => User) private users;
-    mapping(address => bool) private bridgeApps;
 
     // =========================
     //           EVENTS
@@ -4461,87 +5176,80 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
     event MarketingWalletAddressUpdated(address indexed newAddress);
     /// @notice Emitted when the reward pool wallet address is updated.
     event RewardPoolWalletAddressUpdated(address indexed newAddress);
-    /// @notice Emitted when the LP token holder address is updated.
+    /// @notice Emitted when the multi-chain (LP token holder) address is updated.
     event MultiChainWalletAddressUpdated(address indexed newAddress);
     /// @notice Emitted when unclaimed rewards are returned to circulation.
     event UnclaimedRewardsReturnedToCirculation(uint256 amount, uint256 timestamp);
-    /// @notice Emitted when an early investor is added.
-    event EarlyInvestorAdded(address indexed investor);
-    /// @notice Emitted when an early investor is removed.
-    event EarlyInvestorRemoved(address indexed investor);
-    /// @notice Emitted when a fee exclusion is set.
+    /// @notice Emitted when a fee exclusion is set for a user.
     event FeeExclusionSet(address indexed user, bool isExcluded);
-    /// @notice Emitted when a reward exclusion is set.
+    /// @notice Emitted when a reward exclusion is set for a user.
     event RewardExclusionSet(address indexed user, bool isExcluded);
-    /// @notice Emitted when swap and liquify is executed.
-    event SwapAndLiquify(uint256 tokensSwapped, uint256 ethReceived, uint256 tokensIntoLiquidity);
-    /// @notice Emitted when the whaleThresholdRate is updated.
-    event WhaleThresholdRateUpdated(uint256 oldValue, uint256 newValue);
-    /// @notice Emitted when the swap threshold is updated.
-    event SwapThresholdUpdated(uint256 oldValue, uint256 newValue);
-    /// @notice Emitted when a bridge application address is added.
-    event BridgeAppAddressesUpdated(address indexed newAddress, uint256 timestamp);
-    /// @notice Emitted when a bridge application address is removed.
-    event BridgeAppAddressRemoved(address indexed oldAddress, uint256 timestamp);
-    /// @notice Emitted when burning is triggered by bridging.
-    event BurnDueToBridge(address indexed userAddress, uint256 value);
-    /// @notice Emitted when minting is triggered by bridging.
-    event MintDueToBridge(address indexed userAddress, uint256 value);
+    /// @notice Emitted when liquidity is added via swap and liquify.
+    event AddLiquidity(uint256 tokensSwapped, uint256 ethReceived, uint256 tokensIntoLiquidity);
+    /// @notice Emitted when a cross-chain transfer is initiated.
+    event Bridge(uint256 amount, uint16 sourceChainId, address indexed sourceWalletAddress, uint16 targetChainId, address indexed targetWalletAddress);
+    /// @notice Emitted when tokens are minted as part of a cross-chain transfer.
+    event BridgeReceive(uint256 amount, uint16 sourceChainId, address indexed sourceWalletAddress, uint16 targetChainId, address indexed targetWalletAddress);
+    /// @notice Emitted when a swap operation fails due to an unhandled issue.
+    event SwapAndLiquify(uint256 tokenAmount, uint256 nativeTokenAmount);
+    /// @notice Emitted when the chain ID is updated.
+    event ChainIdUpdated(uint16 newChainId);
+    /// @notice Emitted when a registered sender is updated.
+    event RegisteredSenderUpdated(uint16 chainId, bytes32 newSender);
 
     // =========================
     //         CONSTRUCTOR
     // =========================
 
     /**
-     * @notice Initializes the LazyCoin token contract with advanced fee, reward, and liquidity mechanisms.
+     * @notice Initializes the LazyCoin token contract with advanced fee, reward, liquidity, and cross-chain mechanisms.
      * @dev Performs the following actions:
-     *      1. Calls the ERC20 constructor with the name "LazyCoin" and symbol "LZY", and initializes ERC20Permit with "LazyCoin".
-     *      2. Sets the deployer (specified by _recipient) as the owner via Ownable.
-     *      3. Configures the Uniswap V2 router using _routerAddress and creates a token/WETH pair.
-     *      4. Initializes key parameters:
-     *         - `swapThreshold` is set to 50,000 tokens (scaled by decimalFactor).
-     *         - Fee parameters (whale threshold rate, whale fee rate, marketing fee rate, reward fee rate, liquidity fee rate) are defined.
-     *         - `minRewardHoldingTime` is set to 24 (hours) and `maxRewardHoldingTime` is set to 72 (hours).
-     *      5. Sets wallet addresses for marketing, reward pool, and liquidity pool token holder.
-     *      6. Excludes designated addresses (recipient, marketing wallet, reward pool, LP token holder, the contract itself, and the Uniswap pair)
+     *      1. Calls the ERC20 constructor with the name "LazyCoin" and symbol "LZY".
+     *      2. Initializes ERC20Permit with "LazyCoin".
+     *      3. Sets the deployer (specified by _recipient) as the owner via Ownable.
+     *      4. Configures the Uniswap V2 router using _routerAddress and creates a token/WETH pair.
+     *      5. Sets key parameters:
+     *         - The swap threshold is set to a constant value of 50,000 tokens.
+     *         - Fee parameters (whale threshold, whale fee rate, marketing fee rate, reward fee rate, liquidity fee rate) are defined.
+     *         - MIN_REW_HOLDING_TIME is set to 24 hours and MAX_REW_HOLDING_TIME is set to 72 hours.
+     *      6. Sets wallet addresses for marketing, reward pool, and multi-chain token holder.
+     *      7. Excludes designated addresses (the recipient, marketing wallet, reward pool, multi-chain wallet, the contract itself, and the Uniswap pair)
      *         from fee deductions and reward accrual.
-     *      7. Mints an initial supply of 1,000,000,000 tokens (scaled by decimalFactor) to _recipient.
+     *      8. Mints an initial supply of 1,000,000,000 tokens (using the token's decimal factor) to _recipient.
      *
      * @param _recipient The address to receive the initial token supply and be set as the owner.
      * @param _marketingWalletAddress The address designated to receive marketing fees.
      * @param _rewardPoolAddress The address designated to hold tokens for the reward pool.
      * @param _multiChainWalletAddress The address for storing segregated multi-chain tokens.
      * @param _routerAddress The address of the Uniswap V2 router used for liquidity operations.
+     * @param _wormholeRelayer The address of the Wormhole relayer for cross-chain messaging.
+     * @param _chainId The chain identifier for this contract.
      */
     constructor(
         address _recipient, 
         address _marketingWalletAddress, 
         address _rewardPoolAddress, 
         address _multiChainWalletAddress, 
-        address _routerAddress
+        address _routerAddress,
+        address _wormholeRelayer,
+        uint16 _chainId
     ) ERC20("LazyCoin", "LZY") ERC20Permit("LazyCoin") Ownable(_recipient) {
         // Set the Uniswap router address.
         uniswapRouter = IUniswapV2Router02(_routerAddress);
-
-        // Initialize base parameters.
-        decimalFactor = 10 ** decimals();
-        swapThreshold = 50000 * decimalFactor; // 50,000 LZY tokens.
-        minRewardHoldingTime = 24; // 24 hours
-        maxRewardHoldingTime = 72; // 72 hours
-        whaleThresholdRate = 10000; // 1% threshold (expressed in ppm)
-        whaleFeeRate  = 30000; // 3%
-        marketingFeeRate = 5000; // 0.5%
-        rewardFeeRate  = 20000; // 2%
-        liquidityFeeRate = 2000; // 0.2%
+        // Set the Wormhole relayer address.
+        wormholeRelayer = IWormholeRelayer(_wormholeRelayer);
+        deliveryProvider = wormholeRelayer.getDefaultDeliveryProvider();
 
         // Set wallet addresses.
         marketingWalletAddress = _marketingWalletAddress;
         rewardPoolAddress = _rewardPoolAddress;
         multiChainWalletAddress = _multiChainWalletAddress;
 
+        // Set the chain id of this contract.
+        chainId = _chainId;
+
         // Create the token pair on Uniswap V2 Factory.
-        uniswapPair = IUniswapV2Factory(uniswapRouter.factory())
-                        .createPair(address(this), uniswapRouter.WETH());
+        uniswapPair = IUniswapV2Factory(uniswapRouter.factory()).createPair(address(this), uniswapRouter.WETH());
 
         // Exclude designated addresses from fees and rewards.
         users[_recipient].isExcludedFromFee = true;
@@ -4558,7 +5266,7 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
         users[uniswapPair].isExcludedFromReward = true;
 
         // Mint the initial token supply to the recipient.
-        _mint(_recipient, 1000000000 * decimalFactor);
+        _mint(_recipient, 1000000000 * (10 ** 18));
     }
 
     // =========================
@@ -4579,7 +5287,7 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
      * @param to The address receiving the tokens (or burning if zero).
      * @param value The original token amount before fee deductions.
      *
-     * @custom:error ERC20InsufficientBalance is thrown if the sender’s balance is insufficient (when not minting).
+     * @custom:error ERC20InsufficientBalance Thrown if the sender’s balance is insufficient (when not minting).
      * @custom:post On success:
      *         - Minting increases totalSupply_ by value.
      *         - Burning decreases totalSupply_ by value.
@@ -4593,6 +5301,10 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
         uint256 rewardFee; 
         uint256 liquidityFee;
         uint256 adjustedValue;
+
+        User storage _fromUser = users[from];
+        User storage _toUser = users[to];
+        User storage _thisUser = users[address(this)];
 
         if (from == address(0)) {
             // Minting: increase total supply.
@@ -4608,23 +5320,20 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
                 liquidityFee,
                 adjustedValue
             ) = calculateFees(value, from, to);
-
             finalValue = adjustedValue;
 
-            uint256 fromBalance = users[from].balance;
+            uint256 fromBalance = _fromUser.balance;
             if (fromBalance < value) {
                 revert ERC20InsufficientBalance(from, fromBalance, value);
             }
 
             // Process fees and update reward data for sender.
             _handleFees(whaleFee, marketingFee, rewardFee, liquidityFee);
-
-            if (!users[from].isExcludedFromReward) {
+            if (!_fromUser.isExcludedFromReward) {
                 calcReward(fromBalance, from);
             }
-
             unchecked {
-                users[from].balance = fromBalance - value;
+                _fromUser.balance = fromBalance - value;
             }
         }
 
@@ -4637,17 +5346,20 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
             // Initialize user reward tracking if needed.
             initializeUserReward(to);
             // Update reward data for recipient if eligible.
-            if (!users[to].isExcludedFromReward) {
-                calcReward(users[to].balance, to);
+            if (!_toUser.isExcludedFromReward) {
+                calcReward(_toUser.balance, to);
             }
             unchecked {
-                users[to].balance += finalValue;
+                _toUser.balance += finalValue;
             }
         }
 
         // Trigger swapAndLiquify if conditions are met.
-        if (users[address(this)].balance >= swapThreshold && !inSwapAndLiquify && from != uniswapPair) {
-            swapAndLiquify(users[address(this)].balance);
+        if (_thisUser.balance >= swapThreshold && 
+            !inSwapAndLiquify && 
+            from != uniswapPair && 
+            !inCrossChainTransfer) {
+            swapAndLiquify(_thisUser.balance);
         } 
 
         emit Transfer(from, to, finalValue);
@@ -4673,18 +5385,207 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
      * @return The token balance of the given account.
      */
     function balanceOf(address account) public view override returns (uint256) {
-        return users[account].balance;
+        User storage _user = users[account];
+        return _user.balance;
     }
 
     // =========================
-    //   INTERNAL TRANSFER LOGIC
+    //    WORMHOLE CROSSCHAIN
+    // =========================
+
+    /**
+     * @notice Quotes the cost for a cross-chain transfer.
+     * @dev Retrieves the estimated cost for delivering an EVM payload to the target chain using the Wormhole relayer.
+     * @param targetChain The target chain identifier.
+     * @param executionParameter Parameters influencing the execution of the cross-chain message. 
+     * Example for the better understanding:
+     *  abi.encode(
+     *      uint8(0), // ExecutionParamsVersion.EVM_V1 = 0
+     *      uint256 gasLimit // The maximum gas limit
+     *  );
+     * @return cost The estimated cost in native chain tokens.
+     */
+    function quoteCrossChainCost(uint16 targetChain, bytes memory executionParameter) public view returns (uint256 cost) {
+        (cost, ) = wormholeRelayer.quoteDeliveryPrice(
+            targetChain,
+            0,
+            executionParameter,
+            deliveryProvider
+        );
+    }
+
+    /**
+     * @notice Initiates a cross-chain transfer by burning tokens on the source chain and sending a payload.
+     * @dev Transfers tokens cross-chain by deducting the specified amount from the sender’s balance and burning them.
+     *      This effectively removes tokens on the source chain, assuming corresponding tokens will be minted
+     *      on the destination chain upon successful transfer.
+     *
+     * @param targetChainId The chain identifier of the target chain.
+     * @param targetContractAddress The address of the contract on the target chain that will receive the payload.
+     * @param targetWalletAddress The wallet address on the target chain to receive tokens.
+     * @param amount The amount of tokens to bridge.
+     * @param executionParameters Extra parameters for the execution of the cross-chain message.
+     */
+    function bridgeTo(
+        uint16 targetChainId,
+        bytes32 targetContractAddress,
+        bytes32 targetWalletAddress,
+        uint256 amount,
+        bytes memory executionParameters
+    ) external payable lockCrossChainTransfer {
+        require(registeredSenders[targetChainId] != 0, "Sender not registered for target chain");
+        require(amount > 0, "Minimum 1 token required");
+
+        bytes32 refoundAddress = bytes32(uint256(uint160(address(this))));
+        bytes32 sourceWalletAddress = bytes32(uint256(uint160(msg.sender)));
+        uint256 cost = quoteCrossChainCost(targetChainId, executionParameters);
+        address _targetWalletAddress = address(uint160(uint256(targetWalletAddress)));
+
+        require(users[msg.sender].balance >= amount, "Insufficient token balance.");
+        require(msg.value >= cost, "Insufficient funds for cross-chain delivery");
+
+        bytes memory payload = abi.encode(
+            uint8(1),  // payload flag 1 indicates standard cross-chain transfer
+            amount,
+            sourceWalletAddress,
+            chainId,
+            targetWalletAddress,
+            targetChainId,
+            cost 
+        );
+        
+        VaaKey[] memory keys = new VaaKey[](0);
+
+        wormholeRelayer.send{value: cost}(
+            targetChainId,
+            targetContractAddress,
+            payload,
+            0,
+            0,
+            executionParameters,
+            chainId,
+            sourceWalletAddress,
+            deliveryProvider,
+            keys,
+            15
+        );
+
+        // Burn the tokens from the sender's balance.
+        _burn(msg.sender, amount);
+        emit Bridge(amount, chainId, msg.sender, targetChainId, _targetWalletAddress);
+    }
+
+    /**
+     * @notice Receives cross-chain messages via the Wormhole relayer.
+     * @dev Verifies that the message is from a registered sender and originates from the Wormhole relayer.
+     *      Decodes the payload, which is expected to contain a payload ID, token amount, source wallet, source chain ID,
+     *      target wallet, target chain ID, and fee.
+     *      The function requires that the payload ID equals 1. If so, it mints tokens to the recipient.
+     *
+     * @param payload The encoded payload containing the transfer details.
+     * @param (unused) An array of additional payloads (currently unused).
+     * @param sourceAddress The source address from the sending chain, encoded as bytes32.
+     * @param sourceChain The identifier of the source chain.
+     * @param deliveryHash The hash of the delivery message.
+     */
+    function receiveWormholeMessages(
+        bytes memory payload,
+        bytes[] memory,
+        bytes32 sourceAddress,
+        uint16 sourceChain,
+        bytes32 deliveryHash
+    ) external override payable isRegisteredSender(sourceChain, sourceAddress) {
+        require(msg.sender == address(wormholeRelayer), "Only relayer allowed"); 
+        bytes32 txId = keccak256(abi.encodePacked(sourceChain, sourceAddress, deliveryHash));
+        require(!processedTransfer[txId], "Already processed");
+        processedTransfer[txId] = true;
+
+        (
+            uint8 payloadId,
+            uint256 amount,
+            bytes32 sourceWalletAddress,
+            uint16 sourceChainId,
+            bytes32 targetWalletAddress,
+            uint16 targetChainId,
+            uint256 fee
+        ) = abi.decode(
+            payload,
+            (
+                uint8,
+                uint256,
+                bytes32,
+                uint16,
+                bytes32,
+                uint16,
+                uint256
+            )
+        );
+
+        address recipient = address(uint160(uint256(targetWalletAddress)));
+        address _sourceWalletAddress = address(uint160(uint256(sourceWalletAddress)));
+        // For this implementation, we expect payloadId to be 1.
+        require(payloadId == 1, "Invalid payload ID");
+        require(recipient != address(0), "Invalid wallet address");
+
+        // Mint tokens to the recipient.
+        _mint(recipient, amount);
+        emit BridgeReceive(amount, sourceChainId, _sourceWalletAddress, targetChainId, recipient);
+    }
+
+    /**
+     * @notice Registers a sender for a given source chain.
+     * @dev Callable only by the contract owner.
+     * @param sourceChain The identifier of the source chain.
+     * @param sourceAddress The sender's address on the source chain.
+     */
+    function setRegisteredSender(uint16 sourceChain, bytes32 sourceAddress) external onlyOwner {
+        require(sourceChain != 0, "Invalid Chain ID!");
+        require(sourceAddress != bytes32(0), "Invalid Source address!");
+
+        registeredSenders[sourceChain] = sourceAddress;
+        emit RegisteredSenderUpdated(sourceChain, sourceAddress);
+    }
+
+    /**
+     * @notice Updates the chain identifier used for cross-chain operations.
+     * @dev Callable only by the contract owner.
+     * @param thisWormholeChainId The new chain identifier for this contract.
+     */
+    function updateChainId(uint16 thisWormholeChainId) external onlyOwner {
+        require(thisWormholeChainId != 0, "Invalid Chain ID!");
+
+        chainId = thisWormholeChainId;
+        emit ChainIdUpdated(thisWormholeChainId);
+    }
+
+    /**
+     * @notice Modifier to verify that the sender is registered for a given source chain.
+     * @param sourceChain The identifier of the source chain.
+     * @param sourceAddress The source address provided.
+     */
+    modifier isRegisteredSender(uint16 sourceChain, bytes32 sourceAddress) {
+        require(registeredSenders[sourceChain] == sourceAddress, "Not registered sender");
+        _;
+    }
+
+    /**
+     * @notice Modifier to prevent reentrancy during cross-chain transfers.
+     * @dev Sets the inCrossChainTransfer flag to true for the duration of the function call.
+     */
+    modifier lockCrossChainTransfer {
+        inCrossChainTransfer = true;
+        _;
+        inCrossChainTransfer = false;
+    }
+
+    // =========================
+    //  INTERNAL TRANSFER LOGIC
     // =========================
 
     /**
      * @notice Calculates the fees for a token transfer and returns the net transfer amount.
      * @dev Computes whale, marketing, reward, and liquidity fees based on the transfer amount and the sender's fee exclusion status.
      *      If the sender is excluded from fees or if tokens are being burned (to == address(0)), no fees are applied.
-     *      The whale fee is applied when the transfer amount is at least (whaleThresholdRate * totalSupply()) / FEE_PRECISION.
      *      Each fee is computed as (amount * feeRate) / FEE_PRECISION.
      *
      * @param value The original transfer amount before fee deductions.
@@ -4714,31 +5615,27 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
     {
         if (users[from].isExcludedFromFee || to == address(0)) return (0, 0, 0, 0, value);
 
-        uint256 whaleThreshold = (whaleThresholdRate * totalSupply()) / FEE_PRECISION;
-        whaleFee = (value >= whaleThreshold && whaleFeeRate != 0)
-            ? (value * whaleFeeRate) / FEE_PRECISION
+        whaleFee = (value >= WHALE_THRESHOLD && WHALE_FEE_RATE != 0)
+            ? (value * WHALE_FEE_RATE) / FEE_PRECISION
             : 0;
-        marketingFee = (marketingFeeRate != 0)
-            ? (value * marketingFeeRate) / FEE_PRECISION
+        marketingFee = (MARKETING_FEE_RATE != 0)
+            ? (value * MARKETING_FEE_RATE) / FEE_PRECISION
             : 0;
-        rewardFee = (rewardFeeRate != 0)
-            ? (value * rewardFeeRate) / FEE_PRECISION
+        rewardFee = (REWARD_FEE_RATE != 0)
+            ? (value * REWARD_FEE_RATE) / FEE_PRECISION
             : 0;
-        liquidityFee = (liquidityFeeRate != 0)
-            ? (value * liquidityFeeRate) / FEE_PRECISION
+        liquidityFee = (LIQUIDITY_FEE_RATE != 0)
+            ? (value * LIQUIDITY_FEE_RATE) / FEE_PRECISION
             : 0;
-
         finalAmount = value - whaleFee - marketingFee - rewardFee - liquidityFee;
     }
 
     /**
-     * @notice Distributes calculated fees to their respective pools and triggers swap-and-liquify if conditions are met.
+     * @notice Distributes calculated fees to their respective pools and triggers liquidity addition if conditions are met.
      * @dev Invokes:
-     *      - `collectRewardFee` for reward fee and whale fee.
-     *      - `collectMarketingFee` for marketing fee.
-     *      - `collectLiquidityFee` for liquidity fee.
-     *      If the contract's token balance (from users[address(this)]) reaches the swapThreshold,
-     *      is not currently swapping, and the sender is not the Uniswap pair, triggers swapAndLiquify.
+     *      - Collects reward fees (both reward fee and whale fee) via collectRewardFee.
+     *      - Collects marketing fee via collectMarketingFee.
+     *      - Collects liquidity fee via collectLiquidityFee.
      *
      * @param whaleFee The whale fee amount.
      * @param marketingFee The marketing fee amount.
@@ -4761,20 +5658,20 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
      * @notice Collects the fee amount designated for the reward system.
      * @dev Increases totalRewards and availableRewards by feeAmount and credits the rewardPoolAddress.
      *      Emits a {RewardsUpdated} event reflecting the updated reward pool balance, totalRewards, and availableRewards.
-     *
      * @param feeAmount The fee amount to collect for rewards.
      */
     function collectRewardFee(uint256 feeAmount) internal {
+        User storage _user = users[rewardPoolAddress];
+
         totalRewards += feeAmount;
         availableRewards += feeAmount;
-        users[rewardPoolAddress].balance += feeAmount;
-        emit RewardsUpdated(users[rewardPoolAddress].balance, totalRewards, availableRewards);
+        _user.balance += feeAmount;
+        emit RewardsUpdated(_user.balance, totalRewards, availableRewards);
     }
 
     /**
      * @notice Collects the fee amount designated for marketing.
      * @dev Credits the marketingWalletAddress with the specified feeAmount.
-     *
      * @param feeAmount The marketing fee amount.
      */
     function collectMarketingFee(uint256 feeAmount) internal {
@@ -4784,7 +5681,6 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
     /**
      * @notice Collects the fee amount designated for liquidity provisioning.
      * @dev Credits the contract's own balance (users[address(this)]) with feeAmount, to be later used for liquidity operations.
-     *
      * @param feeAmount The liquidity fee amount.
      */
     function collectLiquidityFee(uint256 feeAmount) internal {
@@ -4796,97 +5692,51 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
     // =========================
 
     /**
-     * @notice Updates the token swap threshold.
-     * @dev Callable only by the owner.
-     *      The new threshold must be between 5,000 and 100,000 tokens (before scaling by decimalFactor).
-     *
-     * @param value The new swap threshold value.
-     * @return The updated swap threshold (scaled by decimalFactor).
+     * @notice Updates the multi-chain token holder address.
+     * @dev Callable only by the contract owner. The new address is automatically excluded from fees and rewards.
+     * @param newAddress The new multi-chain token holder address.
      */
-    function updateSwapThreshold(uint256 value) external onlyOwner returns (uint256) {
-        require(value >= 5000 && value <= 100000, "Invalid number! Must be between 5000 and 100000 tokens.");
-        uint256 oldValue = swapThreshold;
-        swapThreshold = value * decimalFactor;
-
-        emit SwapThresholdUpdated(oldValue, swapThreshold);
-        return swapThreshold;
-    }
-
-    /**
-     * @notice Updates the whale threshold rate.
-     * @dev Callable only by the owner.
-     *      The new rate must be between 1000 (0.1%) and 100000 (10%) in parts per million.
-     *
-     * @param value The new whale threshold rate.
-     * @return The updated whale threshold rate.
-     */
-    function updateWhaleThresholdRate(uint256 value) external onlyOwner returns (uint256) {
-        require(value >= 1000 && value <= 100000, "Invalid number! Must be between 1000 (0.1%) and 100000 (10%).");
-        uint256 oldThresholdRate = whaleThresholdRate;
-        whaleThresholdRate = value;
-
-        emit WhaleThresholdRateUpdated(oldThresholdRate, whaleThresholdRate);
-        return whaleThresholdRate;
-    }
-
-    /**
-     * @notice Updates the Multi-Chain token holder address.
-     * @dev Callable only by the owner. The new address is automatically excluded from fees and rewards.
-     *
-     * @param newAddress The new Multi-Chain token holder address.
-     */
-    function updatemultiChainWalletAddress(address newAddress) external onlyOwner {
-        requireValidAddress(newAddress);
-        require(newAddress != multiChainWalletAddress, "Same as current address.");
-        // Remove fee/reward exclusions from the old address.
-        users[multiChainWalletAddress].isExcludedFromFee = false;
-        users[multiChainWalletAddress].isExcludedFromReward = false;
-
-        // Set the new address and exclude it.
+    function updateMultiChainWalletAddress(address newAddress) external onlyOwner requireValidAddress(newAddress) {
+        _setExclusion(multiChainWalletAddress, false);
         multiChainWalletAddress = newAddress;
-        users[newAddress].isExcludedFromFee = true;
-        users[newAddress].isExcludedFromReward = true;
+        _setExclusion(newAddress, true);
         emit MultiChainWalletAddressUpdated(multiChainWalletAddress);
     }
 
     /**
      * @notice Updates the marketing wallet address.
-     * @dev Callable only by the owner. The new address is automatically excluded from fees and rewards.
-     *
+     * @dev Callable only by the contract owner. The new address is automatically excluded from fees and rewards.
      * @param newMarketingWallet The new marketing wallet address.
      */
-    function updateMarketingWalletAddress(address newMarketingWallet) external onlyOwner {
-        requireValidAddress(newMarketingWallet);
-        require(newMarketingWallet != marketingWalletAddress, "Same as current address.");
-        // Remove exclusions from the old address.
-        users[marketingWalletAddress].isExcludedFromFee = false;
-        users[marketingWalletAddress].isExcludedFromReward = false;
-
-        // Set and exclude the new marketing wallet address.
+    function updateMarketingWalletAddress(address newMarketingWallet) external onlyOwner requireValidAddress(newMarketingWallet) {
+        _setExclusion(marketingWalletAddress, false);
         marketingWalletAddress = newMarketingWallet;
-        users[newMarketingWallet].isExcludedFromFee = true;
-        users[newMarketingWallet].isExcludedFromReward = true;
+        _setExclusion(newMarketingWallet, true);
         emit MarketingWalletAddressUpdated(newMarketingWallet);
     }
 
     /**
      * @notice Updates the reward pool wallet address.
-     * @dev Callable only by the owner. The new address is automatically excluded from fees and rewards.
-     *
+     * @dev Callable only by the contract owner. The new address is automatically excluded from fees and rewards.
      * @param newRewardPool The new reward pool address.
      */
-    function updateRewardPoolAddress(address newRewardPool) external onlyOwner {
-        requireValidAddress(newRewardPool);
-        require(newRewardPool != rewardPoolAddress, "Same as current address.");
-        // Remove exclusions from the old reward pool address.
-        users[rewardPoolAddress].isExcludedFromFee = false;
-        users[rewardPoolAddress].isExcludedFromReward = false;
-
-        // Set and exclude the new reward pool address.
+    function updateRewardPoolAddress(address newRewardPool) external onlyOwner requireValidAddress(newRewardPool) {
+        _setExclusion(rewardPoolAddress, false);
         rewardPoolAddress = newRewardPool;
-        users[newRewardPool].isExcludedFromFee = true;
-        users[newRewardPool].isExcludedFromReward = true;
+        _setExclusion(newRewardPool, true);
         emit RewardPoolWalletAddressUpdated(newRewardPool);
+    }
+
+    /**
+     * @notice Sets fee and reward exclusion status for a user.
+     * @dev Updates the user's exclusion flags for fee deductions and reward accrual.
+     * @param userAddress The address of the user.
+     * @param isExcluded The exclusion status to set (true to exclude, false to include).
+     */
+    function _setExclusion(address userAddress, bool isExcluded) internal {
+        User storage _user = users[userAddress];
+        _user.isExcludedFromFee = isExcluded;
+        _user.isExcludedFromReward = isExcluded;
     }
 
     // =========================
@@ -4895,59 +5745,62 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
 
     /**
      * @notice Initializes a user's reward tracking data if not already set.
-     * @dev Sets initial checkpoints: firstCheckTs, lastTotalRewards, and lastRewardClaimingTS are set to the current timestamp.
-     *
+     * @dev Sets initial checkpoints: firstCheckTs, lastTotalRewards, and lastRewardClaimingTS are set to the current block timestamp.
      * @param user The address for which to initialize reward tracking.
      */
     function initializeUserReward(address user) private {
-        if (users[user].firstCheckTs == 0) {
-            users[user].firstCheckTs = block.timestamp;
-            users[user].lastTotalRewards = totalRewards;
-            users[user].lastRewardClaimingTS = block.timestamp;
+        User storage _user = users[user];
+        if (_user.firstCheckTs == 0) {
+            _user.firstCheckTs = block.timestamp;
+            _user.lastTotalRewards = totalRewards;
+            _user.lastRewardClaimingTS = block.timestamp;
         }
     }
 
     /**
      * @notice Calculates and updates the reward for a user based on the elapsed time.
-     * @dev Adjusts the user's pending reward:
-     *      - If the elapsed time (in hours) exceeds maxRewardHoldingTime:
+     * @dev Adjusts the user's pending reward based on the elapsed time in hours since the last reward claim.
+     *      - If the elapsed time exceeds MAX_REW_HOLDING_TIME (in hours):
      *          - The entire pending reward is marked as unclaimed.
      *          - Global availableRewards is reduced and uncollectedReward increased accordingly.
      *          - The reward pool's balance is decreased and the contract's balance increased by the unclaimed amount.
      *          - The user's lastRewardClaimingTS is updated and pendingReward reset.
      *          - Emits {UnclaimedRewardsReturnedToCirculation} and a Transfer event from rewardPoolAddress to the contract.
      *      - Otherwise:
-     *          - The reward difference since the last checkpoint is computed.
-     *          - The user's proportional reward share is calculated based on their balance relative to the circulating supply.
-     *          - The user's pendingReward is increased accordingly.
-     *      Finally, updates the user's lastTotalRewards to totalRewards.
+     *          - Computes the reward difference since the last checkpoint.
+     *          - Calculates the user's proportional reward share based on their balance relative to the circulating supply.
+     *          - Increases the user's pendingReward accordingly.
+     *      Finally, updates the user's lastTotalRewards to the current totalRewards.
+     *      Note: Time is measured in hours (each hour = 3600 seconds).
      *
      * @param balance The current token balance of the user.
      * @param user The address for which to calculate the reward.
      */
     function calcReward(uint256 balance, address user) internal {
         User storage _user = users[user];
-        
+
         uint256 pendingTime = (block.timestamp - _user.lastRewardClaimingTS) / 3600; // Time in hours
 
-        if (pendingTime > maxRewardHoldingTime) {
+        if (pendingTime > MAX_REW_HOLDING_TIME) {
             uint256 unCollectedValue = _user.pendingReward;
+
             availableRewards -= unCollectedValue;
             uncollectedReward += unCollectedValue;
-            
-            users[rewardPoolAddress].balance -= unCollectedValue;
-            users[address(this)].balance += unCollectedValue;
 
             _user.lastTotalRewards = totalRewards;
             _user.lastRewardClaimingTS = block.timestamp;
             _user.pendingReward = 0;
 
-            emit UnclaimedRewardsReturnedToCirculation(unCollectedValue, block.timestamp);
-            emit Transfer(rewardPoolAddress, address(this), unCollectedValue);
+            _transfer(rewardPoolAddress, address(this), unCollectedValue);
 
+            emit UnclaimedRewardsReturnedToCirculation(unCollectedValue, block.timestamp);
         } else {
             uint256 rewardDiff = totalRewards - _user.lastTotalRewards;
-            uint256 rewardRatio = (balance * FEE_PRECISION) / getRewardRelevantSupply();
+            uint256 rewardRelevantSupply = getRewardRelevantSupply();
+
+            if (rewardRelevantSupply == 0) return;
+
+            uint256 rewardRatio = (balance * FEE_PRECISION) / rewardRelevantSupply;
 
             _user.pendingReward += (rewardDiff * rewardRatio) / FEE_PRECISION;
             _user.lastTotalRewards = totalRewards;
@@ -4958,7 +5811,7 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
      * @notice Allows a user to claim their accumulated reward.
      * @dev The function:
      *      1. Checks that the caller is eligible for rewards.
-     *      2. Ensures at least minRewardHoldingTime (in hours) have elapsed since the last claim.
+     *      2. Ensures at least MIN_REW_HOLDING_TIME (in hours) have elapsed since the last claim.
      *      3. Calculates the current reward via calcReward.
      *      4. Verifies that a non-zero reward is available and that the reward pool holds sufficient funds.
      *      5. Updates the user's reward checkpoint and global reward trackers, then transfers the reward to the user.
@@ -4966,31 +5819,29 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
      *
      * @custom:non-reentrant This function is protected against reentrancy.
      */
-    function claimReward() external nonReentrant { 
+    function claimReward() external nonReentrant {
         uint256 rewardToClaim;
-        address userAddress = msg.sender;     
+        address userAddress = msg.sender;
+
         User storage user = users[userAddress];
 
-        require(!user.isExcludedFromReward, "User is excluded from the reward system.");
+        require(!user.isExcludedFromReward, "User is excluded from rewards.");
 
         calcReward(user.balance, userAddress);
 
-        require((block.timestamp - user.lastRewardClaimingTS) / 3600 >= minRewardHoldingTime, "Must wait at least 24 hours before claiming rewards.");
+        require((block.timestamp - user.lastRewardClaimingTS) / 3600 >= MIN_REW_HOLDING_TIME, "Must wait at least 24 hours before claiming rewards.");
 
         rewardToClaim = user.pendingReward;
-        
         require(rewardToClaim > 0, "No rewards available.");
         require(availableRewards >= rewardToClaim && rewardToClaim <= users[rewardPoolAddress].balance, "Not enough rewards in pool.");
 
-        user.balance += rewardToClaim;
         user.lastRewardClaimingTS = block.timestamp;
         user.collectedReward += rewardToClaim;
         user.pendingReward = 0;
         availableRewards -= rewardToClaim;
-        users[rewardPoolAddress].balance -= rewardToClaim;
 
+        _transfer(rewardPoolAddress, msg.sender, rewardToClaim);
         emit RewardIssued(userAddress, rewardToClaim, block.timestamp);
-        emit Transfer(rewardPoolAddress, userAddress, rewardToClaim);
     }
 
     // =========================
@@ -4998,115 +5849,28 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
     // =========================
 
     /**
-     * @notice Adds an early investor to the system.
-     * @dev Callable only by the owner. The investor is also excluded from fees.
-     *
-     * @param investor The address of the early investor to add.
-     */
-    function addEarlyInvestor(address investor) external onlyOwner {
-        requireValidAddress(investor);
-        users[investor].isEarlyInvestor = true;
-        users[investor].isExcludedFromFee = true;
-        emit EarlyInvestorAdded(investor);
-    }
-
-    /**
-     * @notice Checks if an address is marked as an early investor.
-     * @dev Callable only by the owner.
-     *
-     * @param user The address to check.
-     * @return True if the address is marked as an early investor, false otherwise.
-     */
-    function isEarlyInvestor(address user) external onlyOwner view returns (bool) {
-        return users[user].isEarlyInvestor;
-    }
-
-    /**
-     * @notice Removes an early investor from the system.
-     * @dev Callable only by the owner. Also re-includes the address for fee deductions.
-     *
-     * @param investor The address of the early investor to remove.
-     */
-    function removeEarlyInvestor(address investor) external onlyOwner {
-        requireValidAddress(investor);
-        users[investor].isEarlyInvestor = false;
-        users[investor].isExcludedFromFee = false;
-        emit EarlyInvestorRemoved(investor);
-    }
-
-    /**
      * @notice Excludes an address from fee deductions.
-     * @dev Callable only by the owner.
-     *
+     * @dev Callable only by the contract owner.
      * @param user The address to exclude from fees.
      */
-    function excludeFromFee(address user) external onlyOwner {
-        requireValidAddress(user);
+    function excludeFromFee(address user) external onlyOwner requireValidAddress(user) {
         users[user].isExcludedFromFee = true;
         emit FeeExclusionSet(user, true);
     }
 
     /**
-     * @notice Checks if an address is excluded from fee deductions.
-     * @dev Callable only by the owner.
-     *
-     * @param user The address to check.
-     * @return True if the address is excluded from fees, false otherwise.
-     */
-    function isExcludedFromFee(address user) external onlyOwner view returns (bool) {
-        return users[user].isExcludedFromFee;
-    }
-
-    /**
-     * @notice Removes fee exclusion for an address.
-     * @dev Callable only by the owner.
-     *
-     * @param user The address to remove fee exclusion from.
-     */
-    function removeExcludeFromFee(address user) external onlyOwner {
-        requireValidAddress(user);
-        users[user].isExcludedFromFee = false;
-        emit FeeExclusionSet(user, false);
-    }
-
-    /**
      * @notice Excludes an address from receiving rewards.
-     * @dev Callable only by the owner.
-     *
+     * @dev Callable only by the contract owner.
      * @param user The address to exclude from rewards.
      */
-    function excludeFromReward(address user) external onlyOwner {
-        requireValidAddress(user);
+    function excludeFromReward(address user) external onlyOwner requireValidAddress(user) {
         users[user].isExcludedFromReward = true;
         emit RewardExclusionSet(user, true);
     }
 
     /**
-     * @notice Checks if an address is excluded from receiving rewards.
-     * @dev Callable only by the owner.
-     *
-     * @param user The address to check.
-     * @return True if the address is excluded from rewards, false otherwise.
-     */
-    function isExcludedFromReward(address user) external onlyOwner view returns (bool) {
-        return users[user].isExcludedFromReward;
-    }
-
-    /**
-     * @notice Removes reward exclusion for an address.
-     * @dev Callable only by the owner.
-     *
-     * @param user The address to remove reward exclusion from.
-     */
-    function removeExcludeFromReward(address user) external onlyOwner {
-        requireValidAddress(user);
-        users[user].isExcludedFromReward = false;
-        emit RewardExclusionSet(user, false);
-    }
-
-    /**
-     * @notice Calculates the relevant token supply for reward calculations.
-     * @dev Excludes tokens held in the reward pool, marketing wallet and the segregated multi-chain tokens from the circulating supply.
+     * @notice Calculates the effective circulating supply for reward calculations.
+     * @dev Excludes tokens held in the reward pool, marketing wallet, and multi-chain wallet from the total supply.
      * @return The effective circulating supply used for reward calculations.
      */
     function getRewardRelevantSupply() internal view returns (uint256) {
@@ -5118,90 +5882,40 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
     }
 
     /**
-     * @notice Validates that the provided address is not the zero address.
-     * @dev Reverts if the address is zero.
-     *
-     * @param addr The address to validate.
+     * @notice Retrieves complete user data for the specified account.
+     * @dev Returns detailed reward and fee-related information for the user.
+     *      Only the account owner or the contract owner can call this function.
+     * @param account The address of the user.
+     * @return _lastRewardClaimingTS Timestamp of the last reward claim.
+     * @return _firstCheckTs Timestamp when reward tracking was first initialized for the user.
+     * @return _lastTotalRewards The total rewards value at the last checkpoint.
+     * @return _pendingReward The reward amount pending to be claimed.
+     * @return _collectedReward The total reward amount that has been claimed by the user.
+     * @return _balance The current token balance of the user.
+     * @return _isExcludedFromFee Boolean indicating if the user is excluded from fee deductions.
+     * @return _isExcludedFromReward Boolean indicating if the user is excluded from reward accrual.
      */
-    function requireValidAddress(address addr) internal pure {
-        require(addr != address(0), "Invalid address: zero address");
-    }
-
-    // =========================
-    //     BRIDGE FUNCTIONS
-    // =========================
-
-    /**
-     * @notice Mints tokens to a specified address, intended for cross-chain bridge operations.
-     * @dev Callable only by an authorized bridge address.
-     *
-     * @param _owner The address to receive the minted tokens.
-     * @param _value The amount of tokens to mint.
-     * @return True if minting succeeds.
-     */
-    function bridgeMint(address _owner, uint256 _value) external onlyBridge returns(bool) {
-        requireValidAddress(_owner);
-        require(_value > 0, "Invalid value");
-
-        _mint(_owner, _value);
-
-        emit MintDueToBridge(_owner, _value);
-        return true;
-    }
-
-    /**
-     * @notice Burns tokens from a specified address, intended for cross-chain bridge operations.
-     * @dev Callable only by an authorized bridge address.
-     *
-     * @param userAddress The address from which tokens will be burned.
-     * @param value The amount of tokens to burn.
-     * @return True if burning succeeds.
-     */
-    function bridgeBurn(address userAddress, uint256 value) external onlyBridge returns(bool) {
-        requireValidAddress(userAddress);
-        require(value > 0, "Invalid value");
-        require(value <= users[userAddress].balance, "Not enough balance.");
-
-        _burn(userAddress, value);
-
-        emit BurnDueToBridge(userAddress, value);
-        return true;
-    }
-
-    /**
-     * @notice Adds a new bridge application address to authorize cross-chain operations.
-     * @dev Callable only by the owner.
-     *
-     * @param newAddress The new bridge application address.
-     * @return True if the update succeeds.
-     */
-    function addBridgeAppAddress(address newAddress) external onlyOwner returns(bool) {
-        requireValidAddress(newAddress);
-        bridgeApps[newAddress] = true;
-        emit BridgeAppAddressesUpdated(newAddress, block.timestamp);
-        return true;
-    }
-
-    /**
-     * @notice Removes a bridge application address from authorization.
-     * @dev Callable only by the owner.
-     *
-     * @param oldAddress The bridge application address to remove.
-     * @return True if removal succeeds.
-     */
-    function removeBridgeAppAddress(address oldAddress) external onlyOwner returns(bool) {
-        requireValidAddress(oldAddress);
-        bridgeApps[oldAddress] = false;
-        emit BridgeAppAddressRemoved(oldAddress, block.timestamp);
-        return true;
-    }
-
-    /**
-     * @notice Modifier to restrict function access to authorized bridge application addresses.
-     */
-    modifier onlyBridge {
-        require(bridgeApps[msg.sender], "Caller is not authorized.");
-        _;
+    function getUser(address account) external view returns (
+        uint256 _lastRewardClaimingTS,
+        uint256 _firstCheckTs,
+        uint256 _lastTotalRewards,
+        uint256 _pendingReward,
+        uint256 _collectedReward,
+        uint256 _balance,
+        bool _isExcludedFromFee,
+        bool _isExcludedFromReward
+    ) {
+        User memory u = users[account];
+        return (
+            u.lastRewardClaimingTS,
+            u.firstCheckTs,
+            u.lastTotalRewards,
+            u.pendingReward,
+            u.collectedReward,
+            u.balance,
+            u.isExcludedFromFee,
+            u.isExcludedFromReward
+        );
     }
 
     // =========================
@@ -5226,7 +5940,7 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
         addLiquidity(otherHalf, wethBalance);
 
         users[address(this)].balance = 0;
-        emit SwapAndLiquify(half, wethBalance, otherHalf);
+        emit SwapAndLiquify(half, wethBalance);
     }
 
     /**
@@ -5271,17 +5985,27 @@ contract LazyCoin is ERC20, ERC20Permit, ReentrancyGuard, Ownable {
         );
     }
 
-    // =========================
-    //         MODIFIERS
-    // =========================
-
     /**
-     * @notice Prevents reentrancy during swap-and-liquify operations.
+     * @notice Modifier to prevent reentrancy during swap-and-liquify operations.
+     * @dev Sets the inSwapAndLiquify flag to true for the duration of the function call.
      */
     modifier lockTheSwap {
         inSwapAndLiquify = true;
         _;
         inSwapAndLiquify = false;
+    }
+
+    // =========================
+    //      OTHER FUNCTIONS
+    // =========================
+
+    /**
+     * @notice Validates that the provided address is not the zero address.
+     * @param addr The address to validate.
+     */
+    modifier requireValidAddress(address addr) {
+        require(addr != address(0), "Invalid address: zero address");
+        _;
     }
 
     /**
